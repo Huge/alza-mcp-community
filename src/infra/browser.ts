@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
 import { proxyFromEnv } from "./proxy.js";
 import { createRequire } from "node:module";
-import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
+import { chromium, type Browser, type BrowserContext, type Page, type Response } from "playwright";
+import { CloudflareChallengeError, UpstreamError } from "./errors.js";
 import { resolveLocale, type Locale } from "./locale.js";
 import { log } from "./logger.js";
 
@@ -12,6 +13,50 @@ const HEADER_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
 
 const DEFAULT_IDLE_BROWSER_TTL_MS = 3 * 60 * 1000;
+
+/**
+ * Throws CloudflareChallengeError when a page navigation ended on Cloudflare's
+ * bot wall instead of an Alza page. Cloudflare answers a challenged request
+ * with 403 (managed/JS challenge) or 503 (legacy "Just a moment…" page) and
+ * marks it with the `cf-mitigated: challenge` response header (live 2026-10-11:
+ * headless Chromium from a flagged IP got exactly that on every catalog URL).
+ * The page title is the fallback signal for proxies that strip the header.
+ * Without this check a 403 used to be swallowed as "0 results" by the catalog.
+ */
+export async function assertNotChallenged(res: Response | null | undefined, page: Page): Promise<void> {
+  if (!res) return;
+  const status = res.status();
+  if (status !== 403 && status !== 503) return;
+  const headers = (typeof res.headers === "function" ? res.headers() : {}) ?? {};
+  const mitigated = headers["cf-mitigated"]?.toLowerCase();
+  let challenged = mitigated === "challenge";
+  if (!challenged && typeof page.title === "function") {
+    const title = await page.title().catch(() => "");
+    challenged = /just a moment|attention required|ověření|verify you are human/i.test(title);
+  }
+  if (!challenged && headers["server"]?.toLowerCase() === "cloudflare" && status === 403) challenged = true;
+  if (challenged) {
+    throw new CloudflareChallengeError(
+      `Cloudflare bot challenge (HTTP ${status}${mitigated ? `, cf-mitigated: ${mitigated}` : ""}) blocked the headless browser on ${page.url()}. ` +
+        "This machine's IP is being challenged by Alza's bot protection, so the catalog could not be read (this is not an empty result). " +
+        "Options: retry in a few minutes, route through a residential proxy (ALZA_PROXY_URL), or attach alza-mcp-community to your own already-running Chrome (ALZA_CDP_URL), which usually passes."
+    );
+  }
+}
+
+/**
+ * `assertNotChallenged` plus: any other 5xx, 403 or 429 becomes an UpstreamError
+ * instead of being read as an Alza page. 404 is left to the caller (it means
+ * "unknown product/category" or a legitimate "no results" page).
+ */
+export async function assertPageOk(res: Response | null | undefined, page: Page): Promise<void> {
+  await assertNotChallenged(res, page);
+  if (!res) return;
+  const status = res.status();
+  if (status >= 500 || status === 403 || status === 429) {
+    throw new UpstreamError(status, `${page.url()} answered HTTP ${status} instead of a page (not an empty result). Retry later.`);
+  }
+}
 
 export interface BrowserOptions {
   baseUrl?: string;

@@ -26,7 +26,7 @@ import { createAccountTools } from "./tools/account.js";
 import { createAdvancedTools } from "./tools/advanced.js";
 import { createPcBuildCheckTool, createPcBuildSuggestTool } from "./tools/pc-builder.js";
 import { createWatchdogTools } from "./tools/watchdog.js";
-import { registerToolsets, type LockedToolsets } from "./tools/toolsets.js";
+import { parseToolsetsEnv, registerToolsets, type LockedToolsets } from "./tools/toolsets.js";
 import { registerReportIssueTool } from "./tools/report-issue.js";
 import { RecentErrors } from "./infra/issue-report.js";
 import { MobileApi } from "./infra/mobile-api.js";
@@ -45,6 +45,8 @@ export interface BuildOptions {
   cfTransport?: ImpersonateTransport;
   /** Toolsets this deployment refuses to enable, with the reason (see toolsets.ts). */
   lockedToolsets?: LockedToolsets;
+  /** Toolsets enabled at startup on top of the defaults. Default: `ALZA_TOOLSETS` (see parseToolsetsEnv). */
+  enabledToolsets?: readonly string[];
   /** Auto-load ALZA_TOKEN_FILE (default true; see MobileApiOptions.loadTokenFile). */
   loadTokenFile?: boolean;
   /** Extra sentence appended to the server instructions (e.g. the HTTP-mode note). */
@@ -138,7 +140,7 @@ export function buildServer(opts: BuildOptions = {}): BuildResult {
     ...createWatchdogTools(deps),
     createPcBuildCheckTool(deps),
     createPcBuildSuggestTool(deps),
-  ], opts.lockedToolsets);
+  ], opts.lockedToolsets, opts.enabledToolsets ?? parseToolsetsEnv(process.env.ALZA_TOOLSETS));
 
   registerReportIssueTool(server, errorWrap, {
     recentErrors,
