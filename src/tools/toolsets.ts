@@ -122,15 +122,41 @@ export const TOOLSET_DEFS: ToolsetDef[] = [
  */
 export type LockedToolsets = Readonly<Record<string, string>>;
 
+/**
+ * Parse `ALZA_TOOLSETS` (comma/space-separated toolset ids, or `all`): toolsets
+ * to enable at startup, on top of the defaults. For MCP clients that never
+ * re-fetch the tool list after `notifications/tools/list_changed` (reported
+ * 2026-10-11 for Grok Bot: `set_toolset` succeeded but the client kept showing
+ * the 13 default tools), the only way to reach the basket/order tools is to
+ * have them visible from the first `tools/list`. Unknown ids are a startup
+ * error so a typo cannot silently leave a toolset hidden.
+ */
+export function parseToolsetsEnv(raw: string | undefined): string[] {
+  const ids = (raw ?? "").split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+  const known = TOOLSET_DEFS.map((d) => d.id);
+  for (const id of ids) {
+    if (id !== "all" && !known.includes(id)) {
+      throw new Error(`ALZA_TOOLSETS: unknown toolset "${id}" (known: all, ${known.join(", ")})`);
+    }
+  }
+  return ids.includes("all") ? known : [...new Set(ids)];
+}
+
 export function registerToolsets(
   server: McpServer,
   errorWrap: (name: string, fn: () => Promise<ToolResult>) => Promise<ToolResult>,
   allTools: RegisterableTool[],
-  locked: LockedToolsets = {}
+  locked: LockedToolsets = {},
+  /** Toolset ids enabled at startup in addition to the defaults (see parseToolsetsEnv). Locked ids are skipped. */
+  initiallyEnabled: readonly string[] = []
 ): void {
   for (const id of Object.keys(locked)) {
     if (!TOOLSET_DEFS.some((d) => d.id === id)) throw new Error(`toolset config error: cannot lock unknown toolset "${id}"`);
   }
+  for (const id of initiallyEnabled) {
+    if (!TOOLSET_DEFS.some((d) => d.id === id)) throw new Error(`toolset config error: cannot enable unknown toolset "${id}"`);
+  }
+  const startEnabled = new Set(initiallyEnabled.filter((id) => locked[id] === undefined));
   const groupByTool = new Map<string, ToolsetDef>();
   for (const def of TOOLSET_DEFS) {
     for (const name of def.tools) {
@@ -153,7 +179,7 @@ export function registerToolsets(
     registered.set(tool.name, tool.register(server, errorWrap));
   }
   for (const [name, def] of groupByTool) {
-    if (!def.defaultEnabled || locked[def.id] !== undefined) registered.get(name)!.disable();
+    if (locked[def.id] !== undefined || (!def.defaultEnabled && !startEnabled.has(def.id))) registered.get(name)!.disable();
   }
 
   const toolsetIds = TOOLSET_DEFS.map((d) => d.id);
@@ -165,6 +191,7 @@ export function registerToolsets(
       description:
         "List every toolset this server groups its tools into: id, title, description, member tool names, and whether it's currently enabled. " +
         "Only `catalog` and `auth` are enabled by default to keep the visible tool list small — use `set_toolset` to turn on the group a task actually needs (e.g. `basket_and_checkout` before placing an order). " +
+        "If your client does not refresh its tool list after `set_toolset` (it ignores `notifications/tools/list_changed`), the operator can start the server with `ALZA_TOOLSETS=basket_and_checkout,orders_and_payments` (or `all`) so those tools are visible from the start. " +
         "Call this first if you're unsure which toolset covers what you need. Read-only, no network call.",
       inputSchema: {},
       outputSchema: {
@@ -205,7 +232,7 @@ export function registerToolsets(
       title: "Enable or disable a toolset",
       description:
         "Enable or disable every tool in one toolset (or `all` for every toolset) at once, so only the tools relevant to the current task are visible. " +
-        "Call `list_toolsets` first to see the available ids. Changing this fires the standard MCP tools-list-changed notification. " +
+        "Call `list_toolsets` first to see the available ids. Changing this fires the standard MCP tools-list-changed notification; clients that ignore it keep their old tool list — then the operator should set `ALZA_TOOLSETS` (see `list_toolsets`) and restart the server instead. " +
         "No Alza-side effect — this only changes which tools this MCP server currently exposes to you.",
       inputSchema: {
         id: z.enum(["all", ...toolsetIds] as [string, ...string[]]).describe("Toolset id from `list_toolsets`, or \"all\"."),

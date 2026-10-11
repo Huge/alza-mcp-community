@@ -119,3 +119,53 @@ describe("progressive tool disclosure (toolsets)", () => {
     }
   });
 });
+
+describe("ALZA_TOOLSETS: toolsets visible from the first tools/list (clients that ignore list_changed)", () => {
+  it("parses comma/space-separated ids, `all`, and rejects unknown ids", async () => {
+    const { parseToolsetsEnv } = await import("../src/tools/toolsets.js");
+    expect(parseToolsetsEnv(undefined)).toEqual([]);
+    expect(parseToolsetsEnv("")).toEqual([]);
+    expect(parseToolsetsEnv("basket_and_checkout, orders_and_payments basket_and_checkout")).toEqual(["basket_and_checkout", "orders_and_payments"]);
+    expect(parseToolsetsEnv("all")).toEqual(TOOLSET_DEFS.map((d) => d.id));
+    expect(() => parseToolsetsEnv("basket")).toThrow(/ALZA_TOOLSETS: unknown toolset "basket"/);
+  });
+
+  it("enables the requested toolsets at startup on top of the defaults", async () => {
+    const built = buildServer({ enabledToolsets: ["basket_and_checkout"] });
+    const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "toolsets-test", version: "0" });
+    await built.server.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      const names = (await client.listTools()).tools.map((t) => t.name);
+      expect(names).toContain("add_to_cart");
+      expect(names).toContain("search_products");
+      expect(names).not.toContain("order_archive");
+    } finally {
+      await client.close();
+      await built.close();
+    }
+  });
+
+  it("reads ALZA_TOOLSETS when no option is passed and skips locked toolsets", async () => {
+    process.env.ALZA_TOOLSETS = "all";
+    try {
+      const built = buildServer({ lockedToolsets: { basket_and_checkout: "test lock" } });
+      const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+      const client = new Client({ name: "toolsets-test", version: "0" });
+      await built.server.connect(serverTransport);
+      await client.connect(clientTransport);
+      try {
+        const names = (await client.listTools()).tools.map((t) => t.name);
+        expect(names).toContain("order_archive");
+        expect(names).toContain("pc_build_check");
+        expect(names).not.toContain("add_to_cart");
+      } finally {
+        await client.close();
+        await built.close();
+      }
+    } finally {
+      delete process.env.ALZA_TOOLSETS;
+    }
+  });
+});

@@ -1,4 +1,4 @@
-import type { AlzaBrowser } from "../infra/browser.js";
+import { assertPageOk, type AlzaBrowser } from "../infra/browser.js";
 import { TtlCache } from "../infra/cache.js";
 import type { MobileApi } from "../infra/mobile-api.js";
 import { log } from "../infra/logger.js";
@@ -185,7 +185,8 @@ export class Reviews {
       let pageError: unknown;
       try {
         data = await this.browser.withPage(async (p) => {
-          await p.goto(url, { waitUntil: "commit", timeout: 30_000 });
+          const res = await p.goto(url, { waitUntil: "commit", timeout: 30_000 });
+          await assertPageOk(res, p);
           await p.waitForLoadState("load", { timeout: 30_000 }).catch(() => {});
           pageUrl = p.url();
           return (await p.evaluate(REVIEW_EXTRACTOR)) as ExtractedReviews;

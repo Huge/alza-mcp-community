@@ -1,5 +1,5 @@
 import type { Page } from "playwright";
-import type { AlzaBrowser } from "../infra/browser.js";
+import { assertNotChallenged, assertPageOk, type AlzaBrowser } from "../infra/browser.js";
 import { TtlCache } from "../infra/cache.js";
 import { NotFoundError } from "../infra/errors.js";
 import { extractJsonLd, findProduct as findJsonLdProduct } from "../infra/jsonld.js";
@@ -618,6 +618,7 @@ export class Catalog {
     await this.categoryExistsCache.memoize(categoryId, async () => {
       const status = await this.browser.withPage(async (p) => {
         const res = await p.goto(`${this.browser.locale.baseUrl}/${categoryId}.htm`, { waitUntil: "commit", timeout: 30_000 });
+        await assertNotChallenged(res, p);
         return res?.status();
       });
       if (status === 404) throw new NotFoundError(`category ${categoryId}`);
@@ -668,6 +669,9 @@ export class Catalog {
     return this.browser.withPage(async (p) => {
       const res = await p.goto(url, { waitUntil: "commit", timeout: 30_000 });
       await p.waitForLoadState("load", { timeout: 30_000 }).catch(() => {});
+      // A Cloudflare challenge (403) or an Alza outage (5xx) is an error, not
+      // "no results" (reported 2026-10-11: every catalog tool returned empty).
+      await assertPageOk(res, p);
       if (res && res.status() >= 400) {
         if (res.status() === 404 && opts.categoryId && (opts.producerIds?.length || opts.filters?.length)) {
           await this.assertCategoryExists(opts.categoryId); // unknown category -> NotFoundError
@@ -736,7 +740,8 @@ export class Catalog {
       log.debug("catalog.getProduct", { code: trimmed, url });
 
       const data = await this.browser.withPage(async (p) => {
-        await p.goto(url, { waitUntil: "commit", timeout: 30_000 });
+        const res = await p.goto(url, { waitUntil: "commit", timeout: 30_000 });
+        await assertPageOk(res, p);
         await p.waitForLoadState("load", { timeout: 30_000 }).catch(() => {});
         let first = (await p.evaluate(PRODUCT_PAGE_EXTRACTOR)) as ProductPageData;
         // .av-container is a client-rendered React component: at "load" it is
@@ -815,6 +820,7 @@ export class Catalog {
       const apiUrl = `/services/restservice.svc/v3/params/${categoryId}?type=CATEGORY&typeId=0&search=`;
       return this.browser.withPage(async (p) => {
         const res = await p.goto(pageUrl, { waitUntil: "commit", timeout: 30_000 });
+        await assertPageOk(res, p);
         if (res?.status() === 404) throw new NotFoundError(`category ${categoryId}`);
         await p.waitForLoadState("load", { timeout: 20_000 }).catch(() => {});
         const raw = (await p.evaluate(
@@ -833,6 +839,7 @@ export class Catalog {
 
       return this.browser.withPage(async (p) => {
         const res = await p.goto(url, { waitUntil: "commit", timeout: 30_000 });
+        await assertPageOk(res, p);
         if (parentId && res?.status() === 404) throw new NotFoundError(`category ${parentId}`);
         await p.waitForLoadState("load", { timeout: 20_000 }).catch(() => {});
 
@@ -895,7 +902,8 @@ export class Catalog {
     // Search by code, expect first matching card.
     const searchUrl = this.buildSearchUrl({ query: code }, 1);
     const found = await this.browser.withPage(async (p) => {
-      await p.goto(searchUrl, { waitUntil: "commit", timeout: 30_000 });
+      const res = await p.goto(searchUrl, { waitUntil: "commit", timeout: 30_000 });
+      await assertPageOk(res, p); // a challenged search must not become "product not found"
       await p.waitForLoadState("load", { timeout: 20_000 }).catch(() => {});
       await p.waitForSelector(".browsingitem", { timeout: 12_000 }).catch(() => null);
       return (await p.evaluate(`(function() {
