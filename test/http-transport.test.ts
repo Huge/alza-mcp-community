@@ -142,6 +142,36 @@ describe("Streamable HTTP transport (default: catalog only)", () => {
     expect(health.status).toBe(200);
     expect(JSON.parse(health.body)).toMatchObject({ ok: true, transport: "streamable-http", account: false });
     expect(server.sessionCount()).toBe(0);
+
+    // Initial request exceeding body limit is rejected with 413
+    const oversized = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { pad: "x".repeat(4 * 1024 * 1024 + 100) } });
+    const tooLargeInit = await rawRequest(server.port, { method: "POST", path: "/mcp", headers, body: oversized });
+    expect(tooLargeInit.status).toBe(413);
+  });
+
+  it("enforces body size limit on existing-session requests", async () => {
+    const server = await start();
+    const client = await connect(server);
+    const sessionId = (client.transport as StreamableHTTPClientTransport).sessionId;
+    expect(sessionId).toBeDefined();
+
+    const headers = {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      "mcp-session-id": sessionId!,
+    };
+    const oversized = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 99,
+      method: "tools/list",
+      params: { pad: "x".repeat(4 * 1024 * 1024 + 100) },
+    });
+    const res = await rawRequest(server.port, { method: "POST", path: "/mcp", headers, body: oversized });
+    expect(res.status).toBe(413);
+    expect(JSON.parse(res.body)).toMatchObject({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: expect.stringMatching(/request body too large/i) },
+    });
   });
 
   it("enforces the session cap and releases a session on DELETE", async () => {

@@ -211,7 +211,19 @@ export async function startHttpServer(opts: HttpServerOptions = {}): Promise<Run
         s.open--;
         s.lastSeen = Date.now();
       });
-      await s.transport.handleRequest(req, res);
+      let body: unknown;
+      if (req.method === "POST") {
+        try {
+          body = await readJsonBody(req);
+        } catch (err) {
+          if (err instanceof BodyTooLargeError) {
+            res.setHeader("connection", "close");
+            return jsonRpcError(res, 413, err.message);
+          }
+          return jsonRpcError(res, 400, `Invalid request body: ${(err as Error).message}`);
+        }
+      }
+      await s.transport.handleRequest(req, res, body);
       return;
     }
 
